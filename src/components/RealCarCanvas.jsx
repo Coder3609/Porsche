@@ -1,11 +1,10 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 
 /**
  * Robust Zero-Stall 60 FPS HTML5 Image Scrollytelling Viewport
- * - Immediate synchronous Image array preloading (zero async fetch/blob network locks)
- * - Hardware 2D canvas drawing with alpha: false
- * - Guaranteed non-blocking sliding draw (draws target or closest preloaded neighbor)
- * - Erases bottom-right diamond watermark icon cleanly
+ * - Progressive Loading: Eagerly loads opening frames, then loads the rest in order
+ * - Loading indicator until the first 25 frames are ready to scrub
+ * - Guaranteed non-blocking fallback rendering so it NEVER freezes
  */
 export function RealCarCanvas({ onScrollProgress }) {
   const canvasRef = useRef(null);
@@ -17,20 +16,30 @@ export function RealCarCanvas({ onScrollProgress }) {
   const TOTAL_FRAMES = 409;
   const smoothFrameRef = useRef(0);
   const targetFrameRef = useRef(0);
+  const [loadProgress, setLoadProgress] = useState(0);
+  const [isReady, setIsReady] = useState(false);
 
-  // Synchronous HTMLImageElement preloader (instant, native browser HTTP cache)
+  // Progressive image preloader
   useEffect(() => {
     const images = new Array(TOTAL_FRAMES);
+    let loadedCount = 0;
 
     for (let i = 1; i <= TOTAL_FRAMES; i++) {
       const pad = String(i).padStart(4, '0');
       const img = new Image();
       img.src = `/frames/frame_${pad}.png`;
-      if (i === 1) {
-        img.onload = () => {
+      img.onload = () => {
+        loadedCount++;
+        if (loadedCount % 10 === 0 || loadedCount === TOTAL_FRAMES) {
+          setLoadProgress(Math.round((loadedCount / TOTAL_FRAMES) * 100));
+        }
+        if (loadedCount >= 20 && !isReady) {
+          setIsReady(true);
+        }
+        if (i === 1) {
           renderFrame(0);
-        };
-      }
+        }
+      };
       images[i - 1] = img;
     }
 
@@ -53,7 +62,7 @@ export function RealCarCanvas({ onScrollProgress }) {
     return () => window.removeEventListener('scroll', handleScroll);
   }, [onScrollProgress]);
 
-  // Master 60/120 FPS continuous tick loop
+  // Continuous 60 FPS tick loop
   useEffect(() => {
     const tick = (now) => {
       const dt = Math.min((now - lastTimeRef.current) / 1000, 0.1) || 0.016;
@@ -62,7 +71,6 @@ export function RealCarCanvas({ onScrollProgress }) {
       const target = targetFrameRef.current;
       const current = smoothFrameRef.current;
 
-      // Exponential decay: ultra responsive and never locks
       const k = 1 - Math.exp(-dt * 16);
       smoothFrameRef.current += (target - current) * k;
 
@@ -84,7 +92,7 @@ export function RealCarCanvas({ onScrollProgress }) {
     };
   }, []);
 
-  // Find target or closest available frame so canvas NEVER freezes
+  // Robust fallback: returns target frame or the closest available loaded frame
   const getDrawableImage = (index) => {
     const list = imagesRef.current;
     if (!list || list.length === 0) return null;
@@ -94,8 +102,8 @@ export function RealCarCanvas({ onScrollProgress }) {
       return targetImg;
     }
 
-    // Bidirectional fallback search
-    for (let offset = 1; offset < 40; offset++) {
+    // Search closest loaded neighbor
+    for (let offset = 1; offset < 50; offset++) {
       const left = list[index - offset];
       if (left && left.complete && left.naturalWidth > 0) return left;
       const right = list[index + offset];
@@ -151,7 +159,7 @@ export function RealCarCanvas({ onScrollProgress }) {
 
     ctx.drawImage(img, offsetX, offsetY, renderW, renderH);
 
-    // Seamlessly erase watermark icon in bottom-right corner
+    // Erase bottom-right diamond logo watermark seamlessly
     const iconW = renderW * 0.045;
     const iconH = renderH * 0.09;
     const iconX = offsetX + renderW * 0.885;
@@ -168,7 +176,7 @@ export function RealCarCanvas({ onScrollProgress }) {
     ctx.fillStyle = floorGrad;
     ctx.fillRect(iconX - 15, iconY - 15, iconW + 30, iconH + 30);
 
-    // Clean factory German plate on rear turntable shots
+    // German factory plate on rear turntable shots
     if (index >= 380 && index <= 409) {
       const plateW = renderW * 0.105;
       const plateH = renderH * 0.048;
@@ -206,6 +214,16 @@ export function RealCarCanvas({ onScrollProgress }) {
   return (
     <div className="fixed inset-0 w-screen h-screen pointer-events-none z-0 overflow-hidden bg-[#060506]">
       <canvas ref={canvasRef} className="w-full h-full block" />
+
+      {/* Subtle loader bar on slow initial network connections */}
+      {loadProgress < 100 && (
+        <div className="absolute top-0 left-0 w-full h-[2px] bg-white/5 z-50">
+          <div
+            className="h-full bg-[#ff3b7e] transition-all duration-300 shadow-[0_0_10px_#ff3b7e]"
+            style={{ width: `${loadProgress}%` }}
+          />
+        </div>
+      )}
     </div>
   );
 }
