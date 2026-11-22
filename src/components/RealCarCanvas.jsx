@@ -1,85 +1,43 @@
 import React, { useRef, useEffect } from 'react';
 
 /**
- * Native Pure-Hardware Scrollytelling Film Engine
- * - Zero artificial lag / scrub fighting
- * - Direct GPU ImageBitmap pipeline with native requestAnimationFrame interpolation
- * - Direct window scroll progress reading for 1:1 butter-smooth response
- * - Seamless license plate branding replacing distorted artifacts
+ * Robust Zero-Stall 60 FPS HTML5 Image Scrollytelling Viewport
+ * - Immediate synchronous Image array preloading (zero async fetch/blob network locks)
+ * - Hardware 2D canvas drawing with alpha: false
+ * - Guaranteed non-blocking sliding draw (draws target or closest preloaded neighbor)
+ * - Erases bottom-right diamond watermark icon cleanly
  */
 export function RealCarCanvas({ onScrollProgress }) {
   const canvasRef = useRef(null);
+  const imagesRef = useRef([]);
   const animIdRef = useRef(null);
   const lastTimeRef = useRef(performance.now());
   const lastRenderedIdx = useRef(-1);
 
   const TOTAL_FRAMES = 409;
-  const bitmapsRef = useRef(new Map());
-  const blobsRef = useRef([]);
   const smoothFrameRef = useRef(0);
   const targetFrameRef = useRef(0);
 
-  // Eagerly load & decode all frames into GPU ImageBitmaps
+  // Synchronous HTMLImageElement preloader (instant, native browser HTTP cache)
   useEffect(() => {
-    let isCancelled = false;
+    const images = new Array(TOTAL_FRAMES);
 
-    async function loadFrames() {
-      const EAGER = 80;
-      const eagerBatch = [];
-
-      for (let i = 0; i < EAGER; i++) {
-        const pad = String(i + 1).padStart(4, '0');
-        const url = `/frames/frame_${pad}.png`;
-        eagerBatch.push(
-          fetch(url)
-            .then((r) => r.blob())
-            .then(async (blob) => {
-              if (isCancelled) return;
-              blobsRef.current[i] = blob;
-              const bmp = await createImageBitmap(blob);
-              bitmapsRef.current.set(i, bmp);
-              if (i === 0) renderFrame(0);
-            })
-            .catch(() => {})
-        );
+    for (let i = 1; i <= TOTAL_FRAMES; i++) {
+      const pad = String(i).padStart(4, '0');
+      const img = new Image();
+      img.src = `/frames/frame_${pad}.png`;
+      if (i === 1) {
+        img.onload = () => {
+          renderFrame(0);
+        };
       }
-
-      await Promise.all(eagerBatch);
-
-      for (let i = EAGER; i < TOTAL_FRAMES; i += 12) {
-        if (isCancelled) break;
-        const batch = [];
-        for (let j = i; j < Math.min(i + 12, TOTAL_FRAMES); j++) {
-          const pad = String(j + 1).padStart(4, '0');
-          const url = `/frames/frame_${pad}.png`;
-          batch.push(
-            fetch(url)
-              .then((r) => r.blob())
-              .then(async (blob) => {
-                if (isCancelled) return;
-                blobsRef.current[j] = blob;
-                const bmp = await createImageBitmap(blob);
-                bitmapsRef.current.set(j, bmp);
-              })
-              .catch(() => {})
-          );
-        }
-        await Promise.all(batch);
-      }
+      images[i - 1] = img;
     }
 
-    loadFrames();
-
-    return () => {
-      isCancelled = true;
-      for (const bmp of bitmapsRef.current.values()) {
-        if (bmp.close) bmp.close();
-      }
-      bitmapsRef.current.clear();
-    };
+    imagesRef.current = images;
   }, []);
 
-  // Native scroll progress calculation (zero GSAP lag)
+  // Native window scroll progress
   useEffect(() => {
     const handleScroll = () => {
       const scrollY = window.scrollY || window.pageYOffset;
@@ -95,7 +53,7 @@ export function RealCarCanvas({ onScrollProgress }) {
     return () => window.removeEventListener('scroll', handleScroll);
   }, [onScrollProgress]);
 
-  // Pure 60/120/144 FPS Hardware Tick Loop
+  // Master 60/120 FPS continuous tick loop
   useEffect(() => {
     const tick = (now) => {
       const dt = Math.min((now - lastTimeRef.current) / 1000, 0.1) || 0.016;
@@ -104,10 +62,11 @@ export function RealCarCanvas({ onScrollProgress }) {
       const target = targetFrameRef.current;
       const current = smoothFrameRef.current;
 
-      const k = 1 - Math.exp(-dt * 18);
+      // Exponential decay: ultra responsive and never locks
+      const k = 1 - Math.exp(-dt * 16);
       smoothFrameRef.current += (target - current) * k;
 
-      if (Math.abs(target - smoothFrameRef.current) < 0.1) {
+      if (Math.abs(target - smoothFrameRef.current) < 0.2) {
         smoothFrameRef.current = target;
       }
 
@@ -125,24 +84,34 @@ export function RealCarCanvas({ onScrollProgress }) {
     };
   }, []);
 
-  const getDecodedBitmap = (index) => {
-    if (bitmapsRef.current.has(index)) {
-      return bitmapsRef.current.get(index);
+  // Find target or closest available frame so canvas NEVER freezes
+  const getDrawableImage = (index) => {
+    const list = imagesRef.current;
+    if (!list || list.length === 0) return null;
+
+    const targetImg = list[index];
+    if (targetImg && targetImg.complete && targetImg.naturalWidth > 0) {
+      return targetImg;
     }
-    for (let offset = 1; offset < 30; offset++) {
-      if (bitmapsRef.current.has(index - offset)) return bitmapsRef.current.get(index - offset);
-      if (bitmapsRef.current.has(index + offset)) return bitmapsRef.current.get(index + offset);
+
+    // Bidirectional fallback search
+    for (let offset = 1; offset < 40; offset++) {
+      const left = list[index - offset];
+      if (left && left.complete && left.naturalWidth > 0) return left;
+      const right = list[index + offset];
+      if (right && right.complete && right.naturalWidth > 0) return right;
     }
-    return null;
+
+    return list[0]?.complete ? list[0] : null;
   };
 
   const renderFrame = (index) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
-    const bmp = getDecodedBitmap(index);
+    const ctx = canvas.getContext('2d', { alpha: false });
+    const img = getDrawableImage(index);
 
-    if (!bmp) return;
+    if (!img) return;
 
     const dpr = window.devicePixelRatio || 1;
     const width = window.innerWidth;
@@ -164,7 +133,7 @@ export function RealCarCanvas({ onScrollProgress }) {
     ctx.fillStyle = '#060506';
     ctx.fillRect(0, 0, width, height);
 
-    const imgRatio = bmp.width / bmp.height;
+    const imgRatio = img.naturalWidth / img.naturalHeight;
     const screenRatio = width / height;
 
     let renderW, renderH;
@@ -180,27 +149,41 @@ export function RealCarCanvas({ onScrollProgress }) {
     const offsetX = (width - renderW) / 2;
     const offsetY = (height - renderH) / 2;
 
-    ctx.drawImage(bmp, offsetX, offsetY, renderW, renderH);
+    ctx.drawImage(img, offsetX, offsetY, renderW, renderH);
 
-    // If frame is in the rear turntable shot (index 385 to 409), replace the smeared plate with a crisp authentic German euro plate
+    // Seamlessly erase watermark icon in bottom-right corner
+    const iconW = renderW * 0.045;
+    const iconH = renderH * 0.09;
+    const iconX = offsetX + renderW * 0.885;
+    const iconY = offsetY + renderH * 0.775;
+
+    const floorGrad = ctx.createRadialGradient(
+      iconX + iconW / 2, iconY + iconH / 2, 4,
+      iconX + iconW / 2, iconY + iconH / 2, Math.max(iconW, iconH) * 1.2
+    );
+    floorGrad.addColorStop(0, '#100e12');
+    floorGrad.addColorStop(0.6, '#080709');
+    floorGrad.addColorStop(1, 'rgba(6, 5, 6, 0)');
+
+    ctx.fillStyle = floorGrad;
+    ctx.fillRect(iconX - 15, iconY - 15, iconW + 30, iconH + 30);
+
+    // Clean factory German plate on rear turntable shots
     if (index >= 380 && index <= 409) {
       const plateW = renderW * 0.105;
       const plateH = renderH * 0.048;
       const plateX = offsetX + (renderW - plateW) / 2;
       const plateY = offsetY + renderH * 0.525;
 
-      // Authentic matte black euro plate housing
       ctx.fillStyle = '#141416';
       ctx.beginPath();
       ctx.roundRect(plateX, plateY, plateW, plateH, 3);
       ctx.fill();
 
-      // Border outline
       ctx.strokeStyle = '#222328';
       ctx.lineWidth = 1;
       ctx.stroke();
 
-      // Inner plate text "S • GO 718" (Stuttgart Factory Plate)
       ctx.fillStyle = '#e5e7eb';
       ctx.font = `600 ${Math.max(9, Math.round(plateH * 0.45))}px -apple-system, BlinkMacSystemFont, sans-serif`;
       ctx.textAlign = 'center';
